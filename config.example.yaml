@@ -1,0 +1,124 @@
+keywords: []
+
+agent:
+  autonomy_enabled: false
+  permission_model: allowlist
+  capabilities:
+    - terminal
+    - browser
+    - codex_browser
+    - oauth
+    - api
+    - http
+    - ocr
+    - local_models
+    - embedding_models
+    - file_export
+  allowed_platforms:
+    - xiaohongshu
+    - bilibili
+  allowed_output_dirs:
+    - outputs/csv
+    - outputs/logs
+    - outputs/summaries
+    - data
+  forbidden_capabilities:
+    - captcha_bypass
+    - stealth_browser
+    - proxy_rotation
+    - private_messages
+    - paid_wall_bypass
+    - bulk_accounts
+    - credential_extraction
+  audit_log_enabled: true
+
+planner:
+  platform_ratios:
+    xiaohongshu: 0.6
+    bilibili: 0.4
+  keyword_ratios:
+    core_seed: 0.6
+    discovered: 0.25
+    emerging: 0.15
+
+dedupe:
+  exact_hash_enabled: true
+  simhash_enabled: true
+
+ocr:
+  enabled: false
+  provider: ""
+  model: ""
+
+discovery:
+  mode: auto
+  seed_keywords: []
+  seed_urls: []
+  seed_accounts: []
+  platforms:
+    - xiaohongshu
+    - weibo
+    - zhihu
+    - bilibili
+  auto_topic_discovery: true
+
+crawler:
+  concurrency: 1
+  request_timeout_seconds: 20
+  max_retries: 3
+  min_delay_seconds: 1.5
+  max_delay_seconds: 5
+  respect_robots_txt: true
+  platform_budgets:
+    xiaohongshu:
+      max_requests_per_run: 100
+      max_blocked_per_run: 3
+      max_failures_per_run: 10
+      cooldown_seconds_on_block: 600
+    weibo:
+      max_requests_per_run: 100
+      max_blocked_per_run: 3
+      max_failures_per_run: 10
+      cooldown_seconds_on_block: 600
+    zhihu:
+      max_requests_per_run: 100
+      max_blocked_per_run: 3
+      max_failures_per_run: 10
+      cooldown_seconds_on_block: 600
+    bilibili:
+      max_requests_per_run: 100
+      max_blocked_per_run: 3
+      max_failures_per_run: 10
+      cooldown_seconds_on_block: 600
+
+stream:
+  success_target: 10
+  max_candidates: 30
+  max_comments_per_note: 30
+  sleep_between_notes_seconds: 60
+  fast_skip_sleep_seconds: 2
+  write_db: true
+  generate_summary: true
+  headless: false
+
+ai:
+  enabled: false
+  provider: openai_compatible
+  model: ""
+  api_key_env: "OPENAI_API_KEY"
+  base_url: ""
+
+output:
+  db_path: data/xhs_crawler.db
+  csv_dir: outputs/csv
+  log_dir: outputs/logs
+  summary_dir: outputs/summaries
+
+notify:
+  enabled: false
+  channels: []
+
+safety:
+  stop_on_login_required: false
+  allow_manual_repair: true
+  max_retry_per_note: 1

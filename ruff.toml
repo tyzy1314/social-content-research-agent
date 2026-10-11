@@ -1,0 +1,17 @@
+line-length = 120
+target-version = "py312"
+
+exclude = [
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "archive",
+    "backup_cleanup_*",
+    "chromedriver",
+    "data",
+    "outputs",
+]
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]

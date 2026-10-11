@@ -1,0 +1,102 @@
+# 项目文件
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 测试数据（可选：如果不想上传测试数据，取消下面的注释）
+# *.csv
+# *.pdf
+debug_page.html
+
+# Runtime outputs
+outputs/
+reports/
+summaries/
+logs/
+archive/
+backup_cleanup_*/
+
+# Debug snapshots
+debug_*.html
+page_source.html
+*.html.gz
+
+# Scraped data
+xhs_comments_*.csv
+xhs_urls_*.csv
+failed_urls_*.txt
+urls.txt
+urls*_backup.txt
+舆情报告_*.pdf
+
+# SQLite database and runtime files
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Browser profile and local driver
+xhs_chrome_profile/
+chromedriver/
+
+# Local config
+config.yaml
+
+# 密钥（不得提交）
+.provider_key
+.env
+*.key
+
+# Local agent or IDE settings
+.claude/
+.agents/
+.workbuddy/
+# 注意：AGENTS.md 是**项目工程约定**（启动门禁、各轮现状、踩坑记录），
+# 属于交付物，必须纳入版本控制，不在此忽略。
+
+# Python tool caches
+.pytest_cache/
+.pytest-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+
+# 临时文件
+*.tmp
+*.bak
+
+# 早期改造计划遗留文本（非交付物）
+粘贴的文本*.txt
+
+# 工具缓存
+.omo/
