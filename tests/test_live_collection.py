@@ -825,3 +825,29 @@ def test_collect_live_rejects_keyword_and_content_id_together(monkeypatch, capsy
     assert exit_code == 2
     assert migrated == []
     assert "需要且只能提供一个" in capsys.readouterr().out
+
+
+def test_xhs_still_blocked_after_manual_confirmation_stays_blocked():
+    import crawl_engine
+    from crawl_guard import RiskDetectionResult
+
+    class Adapter:
+        headless = False
+        wait_count = 0
+
+        def wait_user_login(self):
+            self.wait_count += 1
+
+        def detect_current_risk(self):
+            return RiskDetectionResult(
+                blocked=True, status="captcha_required", action="require_user_action"
+            )
+
+    adapter = Adapter()
+    login_wall = RiskDetectionResult(blocked=True, status="login_required", action="require_user_action")
+
+    result = crawl_engine._resume_after_xhs_user_action(adapter, login_wall)
+
+    assert adapter.wait_count == 1
+    assert result.blocked is True
+    assert result.status == "captcha_required"
