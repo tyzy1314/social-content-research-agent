@@ -80,7 +80,7 @@
 - [ ] Run `python scripts/smoke_test.py` once. If Bilibili returns HTTP 412/403/429, record the result and do not retry it.
 - [ ] Run `PLATFORM_LIVE_TESTS=1 pytest tests/test_platform_access.py` only if this does not repeat a just-observed blocked endpoint; never retry merely to obtain a passing result.
 - [x] Run the repository engineering-review commands from `AGENTS.md`; inspect `git status`, `git diff --check`, and the full diff; scan the staged source/history for secrets. Do not add `.provider_key`, `.env`, `*.key`, `config.yaml`, `data/`, `outputs/`, or the Chrome profile.
-- [ ] Keep the original `origin` untouched. Add/use the user-requested repository `https://github.com/tyzy1314/social-content-research-agent.git` as a separate publication remote and push only `codex/multiplatform-live-collection` after the checks.
+- [x] Kept the original `origin` untouched, used a separate `social-content` remote for `https://github.com/tyzy1314/social-content-research-agent.git`, and pushed only `codex/multiplatform-live-collection`.
 
 
 Live-only checks are not executed from this worktree: its ignored local database is not present, the last recorded Bilibili live result was HTTP 412 (2026-10-11), and no XHS login session was provided. Do not copy the user database or retry the blocked endpoint just to obtain a green result.
