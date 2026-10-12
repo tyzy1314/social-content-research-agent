@@ -9,6 +9,7 @@ pip install -r requirements.txt
 ## 推荐 CLI
 
 ```bash
+python main.py collect-live --platform all --keyword "露营" --limit 10
 python main.py crawl --platform xiaohongshu --mode test --seed "露营" --limit 10
 python main.py plan-crawl --dry-run --seed "户外露营" --limit 10
 python main.py profile-site --platform xiaohongshu
@@ -18,7 +19,21 @@ python main.py export --format csv --table content
 python main.py export --format xlsx --table all
 ```
 
-`main.py` 是推荐的 CLI 入口。平台能力不是一概而论：小红书实时采集需要登录，免登录只能分析本地已有数据；B 站有免登录公开读取接口，但平台风控会波动，本次上传前复验中详情和评论请求返回 HTTP 412，未重试。抖音、快手、微博、知乎和贴吧的状态各不相同，详见 [平台接入说明](docs/platform-access.md)。
+`main.py` 是推荐的 CLI 入口。`collect-live --platform all` 会按平台逐个运行，显示本次真实采集数量和各平台原因；单个平台失败不会中断整轮。小红书使用现有 Chrome 浏览器采集流程，需要你手动登录；程序不会代登，也不会处理或绕过验证码。B 站走公开 API，遇到 HTTP 401/403/412/429 等限制即停止该平台。其他平台按当前适配器返回需授权、受限或暂不支持。`all` 不代表七个平台都会取得数据，本地历史数据也不会算作本次实时结果。详见 [平台接入说明](docs/platform-access.md)。
+
+关键词采集：
+
+```bash
+python main.py collect-live --platform all --keyword "露营" --limit 10
+```
+
+指定单个平台和内容 ID（仅该平台适配器支持时可用）：
+
+```bash
+python main.py collect-live --platform bilibili --content-id BVxxxxxxxxxx --limit 10
+```
+
+小红书实时流程使用关键词，不支持 `--content-id`。XHS 每轮最多处理 3 条笔记，每条评论最多 20 条；没有有效登录态时，程序会提示手动登录并复核一次，仍被登录墙或验证拦截就停止。 结果写入 `config.yaml` 的 `output.db_path`，默认路径为 `data/xhs_crawler.db`。
 
 ## XHS 兼容主流程
 

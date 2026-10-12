@@ -25,6 +25,23 @@ from models import ContentComment, ContentItem
 
 T = TypeVar("T")
 GUARD_STOP_STATUSES = {"blocked", "login_required", "captcha_required", "rate_limited"}
+
+
+def _resume_after_xhs_user_action(adapter, risk_result: RiskDetectionResult) -> RiskDetectionResult:
+    """Allow one manual login/verification attempt; never resume after rate limiting."""
+    if risk_result.status not in {"login_required", "captcha_required"}:
+        return risk_result
+    if bool(getattr(adapter, "headless", False)):
+        return risk_result
+    wait_for_login = getattr(adapter, "wait_user_login", None)
+    if not callable(wait_for_login):
+        return risk_result
+    try:
+        wait_for_login()
+    except EOFError:
+        print("当前终端无法接收登录确认；请在交互式终端手动登录后重新运行。")
+        return risk_result
+    return adapter.detect_current_risk()
 BILIBILI_ITEM_CSV_FIELDNAMES = [
     "序号",
     "平台",
@@ -97,6 +114,9 @@ class RetryWithBackoff:
 @dataclass
 class CrawlerRunStats:
     scanned_count: int = 0
+    detail_attempts: int = 0
+    detail_successes: int = 0
+    comment_attempts: int = 0
     new_items_count: int = 0
     duplicate_count: int = 0
     failed_count: int = 0
@@ -753,6 +773,7 @@ class CrawlerEngine:
         try:
             search_url = self.adapter.open_search_page(keyword)
             search_risk = self.adapter.detect_current_risk()
+            search_risk = _resume_after_xhs_user_action(self.adapter, search_risk)
             if search_risk.blocked and search_risk.status in GUARD_STOP_STATUSES:
                 self._record_guard_stop(search_risk)
                 print(f"search_page_status: {search_risk.status} | reason: {search_risk.reason}")
@@ -1028,6 +1049,7 @@ class CrawlerEngine:
             persist_note_result,
         )
 
+        self.stats.detail_attempts += 1
         risk_result = self.adapter.detect_current_risk(expected_url_contains="/explore/")
         if risk_result.blocked and risk_result.status in GUARD_STOP_STATUSES:
             self._record_guard_stop(risk_result)
@@ -1079,7 +1101,9 @@ class CrawlerEngine:
             print(f"page_status: unavailable | reason: {unavailable_reason}")
             return False
 
+        self.stats.detail_successes += 1
         comments: List[Dict[str, str]] = []
+        comment_attempted = False
         current_status = "failed"
         current_reason = "unknown_failure"
 
@@ -1096,6 +1120,8 @@ class CrawlerEngine:
                 current_status = "failed"
                 current_reason = "page_state_unknown"
             else:
+                self.stats.comment_attempts += 1
+                comment_attempted = True
                 comments = self.adapter.scrape_current_comments(
                     note_url=str(note_data.get("clean_url") or note_data.get("raw_url") or ""),
                     max_comments=max_comments,
@@ -1163,6 +1189,8 @@ class CrawlerEngine:
             summarizer=summarizer,
         )
         if report:
+            report["detail_read"] = True
+            report["comments_attempted"] = comment_attempted
             note_reports.append(report)
         return current_status in GUARD_STOP_STATUSES
 
@@ -1213,10 +1241,24 @@ class CrawlerEngine:
     ) -> Dict[str, object]:
         from notifier import write_stream_run_report
 
+        collected_legacy_ids: list[int] = []
+        for report in note_reports:
+            note = report.get("note") or {}
+            if not report.get("detail_read") or not isinstance(note, dict):
+                continue
+            try:
+                legacy_id = int(note.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if legacy_id > 0 and legacy_id not in collected_legacy_ids:
+                collected_legacy_ids.append(legacy_id)
         guard_stats = self.guard.stats()
         run_stats = {
             "platform": getattr(self.adapter, "platform_name", ""),
             "scanned_candidates": self.stats.scanned_count,
+            "detail_attempts": self.stats.detail_attempts,
+            "detail_successes": self.stats.detail_successes,
+            "comment_attempts": self.stats.comment_attempts,
             "crawled": self.stats.new_items_count,
             "unavailable": self.stats.unavailable_count,
             "no_comments": self.stats.no_comments_count,
@@ -1224,6 +1266,7 @@ class CrawlerEngine:
             "skipped_non_note": self.stats.skipped_non_note_count,
             "skipped_author_profile": self.stats.skipped_author_profile_count,
             "total_comments": self.stats.total_comments,
+            "collected_legacy_ids": collected_legacy_ids,
             "href_cards": self.stats.href_cards,
             "clickable_cards": self.stats.clickable_cards,
             "clicked_without_href_success": self.stats.clicked_without_href_success,

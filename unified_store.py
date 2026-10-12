@@ -156,6 +156,28 @@ def migrate(db_path: str | Path, *, with_backup: bool = True) -> Dict[str, Any]:
     }
 
 
+def ensure_unified_store(db_path: str | Path) -> Dict[str, Any]:
+    """Create missing unified tables, backing up an existing database only once."""
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    required = {"platform_content", "platform_comments", "platform_runs", "access_records"}
+    if path.exists():
+        with closing(connect(path)) as connection:
+            existing = {
+                row["name"]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        if required.issubset(existing):
+            return {
+                "db_path": str(path),
+                "backup": "",
+                "schema_version": SCHEMA_VERSION,
+                "tables": sorted(required),
+            }
+        return migrate(path, with_backup=True)
+    return migrate(path, with_backup=False)
+
+
 # --------------------------------------------------------------------------- #
 # 运行审计
 # --------------------------------------------------------------------------- #
@@ -392,11 +414,27 @@ def list_access_records(
 # --------------------------------------------------------------------------- #
 # 历史数据导入（保留原有表，仅复制到统一表）
 # --------------------------------------------------------------------------- #
-def import_xhs_history(db_path: str | Path, *, keyword: str = "") -> Dict[str, int]:
-    """把既有小红书数据（content_items / content_comments）复制到统一表。
+def import_xhs_history(
+    db_path: str | Path,
+    *,
+    keyword: str = "",
+    content_item_ids: Iterable[int] | None = None,
+    run_id: str = "xhs-history-import",
+) -> Dict[str, Any]:
+    """Copy XHS legacy rows into unified tables without changing legacy rows.
 
-    原表**不修改、不删除**；幂等，可重复执行。
+    ``content_item_ids`` limits the import to specific legacy rows from one live
+    browser run. ``None`` preserves the original whole-history import behavior.
     """
+    selected_ids = None
+    if content_item_ids is not None:
+        selected_ids = sorted({int(value) for value in content_item_ids if int(value) > 0})
+        if not selected_ids:
+            return {
+                "content": {"seen": 0, "inserted": 0, "updated": 0},
+                "comments": {"seen": 0, "inserted": 0, "updated": 0},
+            }
+
     content_rows: List[Dict[str, Any]] = []
     comment_rows: List[Dict[str, Any]] = []
     with closing(connect(db_path)) as connection:
@@ -406,10 +444,16 @@ def import_xhs_history(db_path: str | Path, *, keyword: str = "") -> Dict[str, i
                 "SELECT id, keyword, note_title, title, note_content, body, clean_url, source_url,"
                 " author_name, publish_time, like_count, comment_count_display FROM content_items"
             )
+            clauses: List[str] = []
             params: List[Any] = []
             if keyword:
-                sql += " WHERE keyword=?"
+                clauses.append("keyword=?")
                 params.append(keyword)
+            if selected_ids is not None:
+                clauses.append("id IN (" + ",".join("?" for _ in selected_ids) + ")")
+                params.extend(selected_ids)
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
             for row in connection.execute(sql, params).fetchall():
                 content_rows.append({
                     "platform": "xiaohongshu",
@@ -428,9 +472,14 @@ def import_xhs_history(db_path: str | Path, *, keyword: str = "") -> Dict[str, i
                     "source_method": "xhs_legacy_import",
                 })
         if "content_comments" in tables:
-            for row in connection.execute(
+            comment_sql = (
                 "SELECT id, content_item_id, username, content, publish_time, likes FROM content_comments"
-            ).fetchall():
+            )
+            comment_params: List[Any] = []
+            if selected_ids is not None:
+                comment_sql += " WHERE content_item_id IN (" + ",".join("?" for _ in selected_ids) + ")"
+                comment_params.extend(selected_ids)
+            for row in connection.execute(comment_sql, comment_params).fetchall():
                 comment_rows.append({
                     "platform": "xiaohongshu",
                     "platform_comment_id": f"xhs_c_{row['id']}",
@@ -440,8 +489,9 @@ def import_xhs_history(db_path: str | Path, *, keyword: str = "") -> Dict[str, i
                     "author_ref": row["username"] or "",
                     "published_at": row["publish_time"] or "",
                     "engagement_metrics": {"like": row["likes"] or ""},
-                    "provenance": {"source_method": "xhs_legacy_import", "legacy_id": row["id"]},
+                    "provenance": {"source_method": "xhs_legacy_import", "legacy_id": row["id"],
+                                   "collection_run_id": run_id},
                 })
-    content_stats = upsert_content(db_path, content_rows, run_id="xhs-history-import")
+    content_stats = upsert_content(db_path, content_rows, run_id=run_id)
     comment_stats = upsert_comments(db_path, comment_rows)
     return {"content": content_stats, "comments": comment_stats}

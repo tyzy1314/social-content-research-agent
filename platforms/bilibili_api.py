@@ -47,6 +47,7 @@ from platforms.capabilities import (
     LIVE_VERIFIED,
     MODE_LOCAL_DATABASE,
     MODE_PUBLIC_READONLY,
+    PERMISSION_DENIED,
     MODE_USER_IMPORT,
     RATE_LIMITED,
     UNAVAILABLE,
@@ -79,6 +80,23 @@ def _ts_to_iso(ts: Any) -> str:
         return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat(timespec="seconds")
     except (TypeError, ValueError, OSError):
         return ""
+
+
+def _http_status_from_error(error: Exception) -> int | None:
+    match = re.search(r"\bHTTP\s+(\d{3})\b", str(error))
+    return int(match.group(1)) if match else None
+
+
+def _status_for_http_status(status_code: int | None) -> str:
+    if status_code in {412, 429}:
+        return RATE_LIMITED
+    if status_code in {401, 403}:
+        return PERMISSION_DENIED
+    return UNAVAILABLE
+
+
+def _request_failure_status(error: Exception) -> str:
+    return _status_for_http_status(_http_status_from_error(error))
 
 
 class BilibiliApiAdapter(BaseAdapter):
@@ -434,20 +452,43 @@ class BilibiliApiAdapter(BaseAdapter):
             f"{API_ROOT}/x/web-interface/search/type?search_type=video"
             f"&keyword={urllib.parse.quote(keyword)}&page=1"
         )
-        # 先用探测层判定：搜索接口受 B站风控影响，412 必须如实上报为 RATE_LIMITED。
-        status, code, message = self._probe_json(url)
+        try:
+            status, raw = self._request(url)
+        except Exception as exc:
+            return AccessResult(
+                self.platform_name, CAP_SEARCH_CONTENT, UNAVAILABLE,
+                f"{type(exc).__name__}: {exc}",
+                access_mode=MODE_PUBLIC_READONLY, evidence={"endpoint": url},
+            )
+
+        payload: Dict[str, Any] = {}
+        code: Any = None
+        message = f"HTTP {status}"
+        if status == 200:
+            try:
+                payload = json.loads(self._decode(raw).decode("utf-8", "replace"))
+                code = payload.get("code")
+                message = str(payload.get("message") or "")
+            except (json.JSONDecodeError, AttributeError):
+                message = "non-JSON body"
         evidence = {"endpoint": url, "http_status": status, "api_code": code, "keyword": keyword}
-        if status == 412 or status == 429:
+        if status in {412, 429}:
             return AccessResult(
                 self.platform_name, CAP_SEARCH_CONTENT, RATE_LIMITED,
                 (f"搜索接口触发风控 HTTP {status}。已立即停止请求，不换 IP / 不换 UA / 不伪造参数。"
                  "降级建议：改用明确视频链接（BV号）直接采集详情与评论，或先用本地已有数据。"),
                 access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
             )
-        if status in (401, 403):
+        if status in {401, 403}:
             return AccessResult(
-                self.platform_name, CAP_SEARCH_CONTENT, "PERMISSION_DENIED",
+                self.platform_name, CAP_SEARCH_CONTENT, PERMISSION_DENIED,
                 f"搜索接口拒绝访客访问 HTTP {status}（需登录态，不绕过）",
+                access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
+            )
+        if code in {-101, -111, -403}:
+            return AccessResult(
+                self.platform_name, CAP_SEARCH_CONTENT, AUTH_REQUIRED,
+                f"搜索接口需要登录态：{message}",
                 access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
             )
         if status != 200 or code != 0:
@@ -456,8 +497,21 @@ class BilibiliApiAdapter(BaseAdapter):
                 f"搜索接口不可用：HTTP {status} / code={code} {message}",
                 access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
             )
-        data = self._get_json(url)
-        raw_items = list(data.get("result") or [])[: max(1, limit)]
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            return AccessResult(
+                self.platform_name, CAP_SEARCH_CONTENT, UNAVAILABLE,
+                "搜索接口返回了无法识别的数据结构",
+                access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
+            )
+        raw_results = data.get("result") or []
+        if not isinstance(raw_results, list) or any(not isinstance(item, dict) for item in raw_results):
+            return AccessResult(
+                self.platform_name, CAP_SEARCH_CONTENT, UNAVAILABLE,
+                "搜索接口返回了无法识别的结果列表",
+                access_mode=MODE_PUBLIC_READONLY, evidence=evidence,
+            )
+        raw_items = raw_results[: max(1, limit)]
         items = [self._normalize_search_item(item) for item in raw_items]
         return AccessResult(
             self.platform_name, CAP_SEARCH_CONTENT, "OK",
@@ -473,7 +527,10 @@ class BilibiliApiAdapter(BaseAdapter):
         except ValueError as exc:
             return AccessResult(self.platform_name, CAP_CONTENT_DETAIL, "INVALID_INPUT", str(exc))
         except RuntimeError as exc:
-            return AccessResult(self.platform_name, CAP_CONTENT_DETAIL, UNAVAILABLE, str(exc))
+            status = _request_failure_status(exc)
+            return AccessResult(self.platform_name, CAP_CONTENT_DETAIL, status, str(exc),
+                                access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": _http_status_from_error(exc)})
         except Exception as exc:
             return AccessResult(self.platform_name, CAP_CONTENT_DETAIL, UNAVAILABLE, f"{type(exc).__name__}: {exc}")
         content = self.normalize_content(data)
@@ -488,8 +545,13 @@ class BilibiliApiAdapter(BaseAdapter):
     def list_comments(self, content_id: str, limit: int = 30) -> AccessResult:
         try:
             resolved = self._resolve(content_id)
-        except (ValueError, RuntimeError) as exc:
+        except ValueError as exc:
             return AccessResult(self.platform_name, CAP_COMMENTS, "INVALID_INPUT", str(exc))
+        except RuntimeError as exc:
+            status = _request_failure_status(exc)
+            return AccessResult(self.platform_name, CAP_COMMENTS, status, str(exc),
+                                access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": _http_status_from_error(exc)})
         comments: List[UnifiedComment] = []
         page = 1
         declared_total = 0
@@ -511,7 +573,10 @@ class BilibiliApiAdapter(BaseAdapter):
                 if page > 20:  # 硬上限，防止无限翻页
                     break
         except RuntimeError as exc:
-            return AccessResult(self.platform_name, CAP_COMMENTS, UNAVAILABLE, str(exc))
+            status = _request_failure_status(exc)
+            return AccessResult(self.platform_name, CAP_COMMENTS, status, str(exc),
+                                access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": _http_status_from_error(exc)})
         except Exception as exc:
             return AccessResult(self.platform_name, CAP_COMMENTS, UNAVAILABLE, f"{type(exc).__name__}: {exc}")
 
@@ -542,7 +607,10 @@ class BilibiliApiAdapter(BaseAdapter):
         except ValueError as exc:
             return AccessResult(self.platform_name, CAP_REPLIES, "INVALID_INPUT", str(exc))
         except RuntimeError as exc:
-            return AccessResult(self.platform_name, CAP_REPLIES, UNAVAILABLE, str(exc))
+            status = _request_failure_status(exc)
+            return AccessResult(self.platform_name, CAP_REPLIES, status, str(exc),
+                                access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": _http_status_from_error(exc)})
         except Exception as exc:
             return AccessResult(self.platform_name, CAP_REPLIES, UNAVAILABLE, f"{type(exc).__name__}: {exc}")
         replies = [
@@ -563,10 +631,18 @@ class BilibiliApiAdapter(BaseAdapter):
             status, raw = self._request(f"{DANMAKU_ROOT}/{resolved['cid']}.xml", accept="application/xml")
         except ValueError as exc:
             return AccessResult(self.platform_name, CAP_BARRAGE, "INVALID_INPUT", str(exc))
+        except RuntimeError as exc:
+            failure_status = _request_failure_status(exc)
+            return AccessResult(self.platform_name, CAP_BARRAGE, failure_status, str(exc),
+                                access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": _http_status_from_error(exc)})
         except Exception as exc:
             return AccessResult(self.platform_name, CAP_BARRAGE, UNAVAILABLE, f"{type(exc).__name__}: {exc}")
         if status != 200:
-            return AccessResult(self.platform_name, CAP_BARRAGE, UNAVAILABLE, f"弹幕接口 HTTP {status}")
+            failure_status = _status_for_http_status(status)
+            return AccessResult(self.platform_name, CAP_BARRAGE, failure_status,
+                                f"弹幕接口 HTTP {status}", access_mode=MODE_PUBLIC_READONLY,
+                                evidence={"http_status": status, "endpoint": f"{DANMAKU_ROOT}/{resolved['cid']}.xml"})
         body = self._decode(raw).decode("utf-8", "replace")
         pairs = re.findall(r'<d p="([^"]+)">([^<]*)</d>', body)[: max(1, limit)]
         items = []

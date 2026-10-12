@@ -13,7 +13,7 @@
 
 ## 方案
 
-新增一个 `main.py collect-live` 命令，复用现有 `ADAPTERS`、`PLATFORM_ORDER`、`platform_service` 和 `unified_store`，不再建第二套平台注册或数据层。
+新增一个 `main.py collect-live` 命令，复用现有 `ADAPTERS`、`PLATFORM_ORDER`、`platform_service` 和 `unified_store`，不再建第二套平台注册或数据层。小红书继续走现有 `CrawlerEngine` 浏览器流式采集；采集后调用已有 `import_xhs_history()` 幂等同步到统一表。它的评论抽取目前没有平台原生评论 ID，因此不为接入通用服务伪造平台 ID。B 站和其他适配器走现有 `platform_service`，统一入口按平台汇总结果。
 
 示例：
 
@@ -22,7 +22,7 @@ python main.py collect-live --platform all --keyword "露营" --limit 10
 python main.py collect-live --platform bilibili --content-id BVxxxxxxxxxx --limit 10
 ```
 
-命令接收单个平台或 `all`，并要求提供关键词或单条内容 ID。关键词用于平台搜索；内容 ID 仅用于指定的平台，不在平台间复用。`all` 模式逐个平台独立运行，单个平台失败不会中断其余平台。
+命令接收单个平台或 `all`，并要求提供关键词或单条内容 ID。关键词用于平台搜索；内容 ID 仅用于指定的平台，不在平台间复用，而且必须由该平台适配器支持。小红书当前实时浏览器流程使用关键词，不接收 content ID。`all` 模式逐个平台独立运行，单个平台失败不会中断其余平台。
 
 ## 登录与平台边界
 

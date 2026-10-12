@@ -24,7 +24,7 @@ from db import (
 )
 from discovery.keyword_extractor import extract_keywords_from_db, write_discovered_keywords_outputs
 from export_utils import EXPORT_TABLES, export_dataset
-from platforms import ADAPTERS, get_adapter_class
+from platforms import ADAPTERS, PLATFORM_ORDER, get_adapter_class
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 CRAWLER_TEST_STREAM_LIMITS = {
@@ -96,6 +96,16 @@ def parse_args() -> argparse.Namespace:
     crawl_parser.add_argument("--limit", type=int, default=10)
     crawl_parser.add_argument("--concurrency", type=int, default=None)
 
+    live_parser = subparsers.add_parser(
+        "collect-live",
+        help="实时采集多平台内容（可能需要登录或授权）",
+        description="按平台实际访问能力采集公开内容；小红书实时采集需要你在本机 Chrome 手动登录。",
+    )
+    live_parser.add_argument("--platform", default="all", choices=[*PLATFORM_ORDER, "all"])
+    live_parser.add_argument("--keyword", default="", help="搜索关键词（all 模式必须使用关键词）")
+    live_parser.add_argument("--content-id", default="", help="适配器支持的单平台内容 ID 或链接；小红书使用关键词")
+    live_parser.add_argument("--limit", type=int, default=10, help="搜索内容数和每条内容的评论数上限")
+
     plan_parser = subparsers.add_parser("plan-crawl", help="生成自主采集计划")
     plan_parser.add_argument("--platform", default="all", choices=[*ADAPTERS.keys(), "all"])
     plan_parser.add_argument("--mode", default="test", choices=["auto", "test", "prod"])
@@ -123,6 +133,87 @@ def parse_args() -> argparse.Namespace:
     add_agent_parser(subparsers)
 
     return parser.parse_args()
+
+
+def run_collect_live(args: argparse.Namespace, config: Dict[str, object]) -> int:
+    keyword = str(getattr(args, "keyword", "") or "").strip()
+    content_id = str(getattr(args, "content_id", "") or "").strip()
+    platform = str(getattr(args, "platform", "all") or "all")
+    limit = int(getattr(args, "limit", 10))
+
+    if bool(keyword) == bool(content_id):
+        print("错误：需要且只能提供一个 --keyword 或 --content-id。")
+        return 2
+    if platform == "all" and content_id:
+        print("错误：--content-id 不能用于 all；请指定单个平台。")
+        return 2
+    if platform == "xiaohongshu" and content_id:
+        print("错误：小红书实时浏览器采集需要关键词；当前不支持直接用 content-id。")
+        return 2
+    if limit < 1:
+        print("错误：--limit 必须大于 0。")
+        return 2
+
+    output_config = config.get("output") or {}
+    db_path = str(output_config.get("db_path") or "data/xhs_crawler.db")
+    from unified_store import ensure_unified_store
+
+    try:
+        ensure_unified_store(db_path)
+    except Exception as exc:
+        print(f"统一数据库初始化失败：{type(exc).__name__}: {str(exc)[:200]}")
+        return 2
+
+    from platform_service import collect_platform_comments
+
+    selected = PLATFORM_ORDER if platform == "all" else [platform]
+    results = []
+    total_records = 0
+    for platform_name in selected:
+        try:
+            summary = collect_platform_comments(
+                db_path,
+                platform_name,
+                content_id=content_id,
+                keyword=keyword,
+                search_limit=limit,
+                comment_limit=limit,
+                topic_label=keyword,
+                output_config=output_config,
+            )
+        except Exception as exc:
+            summary = {
+                "platform": platform_name,
+                "status": "failed",
+                "contents": {},
+                "comments": {},
+                "errors": [f"{type(exc).__name__}: {str(exc)[:200]}"],
+            }
+
+        summary = dict(summary or {})
+        summary.setdefault("platform", platform_name)
+        status = str(summary.get("status") or "failed")
+        contents = summary.get("contents") or {}
+        comments = summary.get("comments") or {}
+        content_count = int(contents.get("seen", 0))
+        comment_count = int(comments.get("seen", 0))
+        seen = content_count + comment_count
+        total_records += seen
+        print(
+            f"{platform_name}: {status} | "
+            f"本次读取内容 {content_count} 条 / 评论 {comment_count} 条"
+        )
+        for error in summary.get("errors") or []:
+            print(f"  原因：{error}")
+        for limited in summary.get("limited") or []:
+            print(f"  受限能力：{limited}")
+        results.append(status)
+
+    succeeded = sum(status == "finished" for status in results)
+    unavailable = len(results) - succeeded
+    label = "全部所选平台已完成" if unavailable == 0 else "部分平台未能实时采集"
+    print(f"{label}：成功 {succeeded} 个，未能完整采集 {unavailable} 个；已采集 {total_records} 条。")
+    return 0
 
 
 def run_crawl(args: argparse.Namespace, config: Dict[str, object]) -> int:
@@ -659,6 +750,8 @@ def main() -> int:
     config = load_config(args.config)
     if args.command == "crawl":
         return run_crawl(args, config)
+    if args.command == "collect-live":
+        return run_collect_live(args, config)
     if args.command == "plan-crawl":
         return run_plan_crawl(args, config)
     if args.command == "discover-keywords":
